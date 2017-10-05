@@ -879,24 +879,44 @@ static bool workio_get_work(struct workio_cmd *wc, CURL *curl)
 {
 	struct work *ret_work;
 	int failures = 0;
+    bool done = false, lockreported = false;
+    int i;
 
 	ret_work = calloc(1, sizeof(*ret_work));
 	if (!ret_work)
 		return false;
 
-	/* obtain new work from bitcoin via JSON-RPC */
-	while (!get_upstream_work(curl, ret_work)) {
-		if (unlikely((opt_retries >= 0) && (++failures > opt_retries))) {
-			applog(LOG_ERR, "json_rpc_call failed, terminating workio thread");
-			free(ret_work);
-			return false;
-		}
+    while (!done) {
+    	/* obtain new work from bitcoin via JSON-RPC */
+    	while (!get_upstream_work(curl, ret_work)) {
+    		if (unlikely((opt_retries >= 0) && (++failures > opt_retries))) {
+    			applog(LOG_ERR, "json_rpc_call failed, terminating workio thread");
+    			free(ret_work);
+    			return false;
+    		}
 
-		/* pause, then restart work-request loop */
-		applog(LOG_ERR, "json_rpc_call failed, retry after %d seconds",
-			opt_fail_pause);
-		sleep(opt_fail_pause);
-	}
+    		/* pause, then restart work-request loop */
+    		applog(LOG_ERR, "json_rpc_call failed, retry after %d seconds",
+    			opt_fail_pause);
+    		sleep(opt_fail_pause);
+    	}
+		for (i = 0; i < ARRAY_SIZE(ret_work->target); i++) {
+            if (ret_work->target[i] != 0) {
+                if (lockreported) {
+                    applog(LOG_ERR, "getwork lock released", i);
+                }
+                done = true;
+                break;
+            }
+        }
+        if (!done) {
+            if (!lockreported) {
+                applog(LOG_ERR, "getwork lock detected");
+                lockreported = true;
+            }
+            sleep(5);
+        }
+    }
 
 	/* send work to requesting thread */
 	if (!tq_push(wc->thr->q, ret_work))
